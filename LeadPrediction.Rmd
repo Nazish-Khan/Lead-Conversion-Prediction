@@ -1,0 +1,878 @@
+---
+title: "Model_Group22_AIP_Group_Assignment"
+output: html_document
+---
+
+This is to certify that the work I am submitting is my own. All external references and sources are clearly acknowledged and identified within the contents. I am aware of the University of Warwick regulation concerning plagiarism and collusion. 
+
+No substantial part(s) of the work submitted here has also been submitted by me in other assessments for accredited courses of study, and I acknowledge that if this has been done an appropriate reduction in the mark I might otherwise have received will be made.
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Dictionary
+The variables of the dataset are described in the table below.
+
+Variables     | Description
+------------- | -------------
+ID            |  customer identification number
+Gender        |  gender of the customer
+Age           |  age of the customer in years
+Dependent     |  whether the customer has a dependent or not
+Marital_Status|  marital state (1=married, 2=single, 0 = others)
+Region_Code   |  code of the region for the customer
+Years_at_Residence    |  the duration in the current residence (in years)
+Occupation    |  occupation type of the customer
+Channel_Code  |  acquisition channel code used to reach the customer when they opened their bank account 
+Vintage       |  the number of months that the customer has been associated with the company.
+Credit_Product|  if the customer has any active credit product (home loan, personal loan, credit card etc.)
+Avg_Account_Balance   |  average account balance for the customer in last 12 months
+Account_Type  |  account type of the customer with categories Silver, Gold and Platinum
+Active        |  if the customer is active in last 3 months
+Registration  |  whether the customer has visited the bank for the offered product registration (1 = yes; 0 = no)
+Target        |  whether the customer has purchased the product (1 = Customer did not purchase the product, 0= Customer purchased the product)
+
+
+# Data Preparation
+## Importing essential libraries
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(FSelector)
+library(caret)
+library(C50)
+library(gmodels)
+library(randomForest)
+library(e1071)
+library(ROSE)
+library(party)
+library(modeldata)
+library(rpart)
+library(randomForestSRC)
+library(pROC) 
+# Load mltools and data.table package for one-hot encoding
+library(mltools)
+library(data.table)
+# Load dplyr package for data encoding
+library(dplyr)
+```
+
+## Importing Data from csv. file
+```{r}
+
+mydata <- read.csv("assignment_data.csv" , stringsAsFactors = TRUE)
+
+summary(mydata)
+
+str(mydata)
+
+```
+
+## Checking correlation
+```{r}
+# extract numerical data, excluding ID column
+numerical_data <- mydata[sapply(mydata, is.numeric) & names(mydata) != 'ID']
+
+# compute correlation matrix
+correlation_matrix <- cor(numerical_data)
+print(correlation_matrix)
+
+```
+
+
+## Removing column ID: It does not important factor to 
+```{r}
+
+# Removing ID Column
+mydata$ID <- NULL
+
+# Checking number of -1 values in 'Dependent' column
+table(mydata$Dependent)
+
+# Removing all the rows with -1 value in 'Dependent' column
+mydata <- mydata %>% filter(!mydata$Dependent == -1)
+
+# Checking number of -1 values after updation in 'Dependent' column
+table(mydata$Dependent)
+
+```
+
+
+## Checking the NA values
+
+```{r}
+summarise_all(mydata, ~ sum(is.na(.x)))
+
+# There are 18233 NA items of Credit_Product
+```
+
+
+## Checking information gain of overall independent variables before removing the NA values from Credit_product
+
+```{r}
+
+# Set a seed
+set.seed(123)
+
+# Partition the dataset into training and test sets
+# index keeps the record indices for the training data
+index = createDataPartition(mydata$Credit_Product , p = 0.8, list = FALSE)
+
+# Generate training and test data
+training = mydata[index,]
+test = mydata[-index,]
+
+```
+
+```{r}
+
+# Use function information.gain to compute information gain values of the attributes
+target <- information.gain(Target~., training)
+
+# Print weights
+print(target)
+
+# Add row names as a column to keep them during ordering
+target$attr  <- rownames(target)
+
+# Sort the weights in decreasing order of information gain values.
+target <- arrange(target, -attr_importance)
+
+# Plot the weights
+barplot(target$attr_importance, names = target$attr, las = 2, ylim = c(0, 0.20))
+
+# The results show that Credit_Production variable is the important factor, so we decided to build a model to predict NA values of the Credit_Product
+```
+
+
+## Checking the imbalance of "Credit_Product"
+
+```{r}
+summary(mydata$Credit_Product)
+prop.table(table(mydata$Credit_Product))
+
+```
+
+
+## Predicting the NA values of "Credit_Products" by applying two models including Random Forest and SVM
+
+```{r}
+
+# New table with no NA values 
+# Removing the NA values and assigning it to new variable for model buildin
+modeling_data <- na.omit(mydata)
+
+# Set a seed
+set.seed(123)
+
+# Partition the dataset into training and test sets
+# index keeps the record indices for the training data
+index = createDataPartition(modeling_data$Credit_Product , p = 0.7, list = FALSE)
+
+# Generate training and test data
+training = modeling_data[index,]
+test = modeling_data[-index,]
+
+str(modeling_data)
+```
+
+
+## Checking the information gain from each rows for the column "Credit_Product" and plotting it
+
+```{r}
+
+credit <- information.gain(Credit_Product~., training)
+print(credit)
+
+# Add row names as a column to keep them during ordering
+credit$attr  <- rownames(credit)
+
+# Let's sort the weights in decreasing order of information gain values.
+# We will use arrange() function 
+credit <- arrange(credit, -attr_importance)
+
+# Plot the weights
+barplot(credit$attr_importance, names = credit$attr, las = 2, ylim = c(0, 0.06))
+
+# Saving the names of the column in 'features' variable with information gain > 0
+# features <- filter(credit, attr_importance > 0)$attr
+# print(features)
+
+
+```
+
+# Building a model to predict the "Credit_Product" value
+
+```{r}
+
+datamodelling <- training
+
+# Adding 'Credit_Product' to our filtered features
+# datamodelling$Credit_Product <- training$Credit_Product
+
+# Removing the 'Gender' and 'Registration'
+datamodelling$ID <- NULL
+# datamodelling$Registration <- NULL
+# datamodelling$Gender <- NULL
+# datamodelling$Region_Code <- NULL
+
+# Build Random Forest model 
+model_RF <- randomForest(Credit_Product ~., datamodelling)
+
+# Plot the importance values
+varImpPlot(model_RF)
+
+
+```
+
+
+```{r}
+
+# model_RF prediction
+prediction_RF <- predict(model_RF, test)
+
+# Compute the confusion matrix
+confusionMatrix(data = prediction_RF, test$Credit_Product, mode = "prec_recall")
+
+
+```
+
+
+```{r}
+
+#dataset with NA values
+temp <- mydata[!complete.cases(mydata), ] 
+
+pred_temp <- predict(model_RF, temp)
+
+temp$pred_Credit_Product <- pred_temp
+
+summary(temp)
+```
+
+
+```{r}
+## modeling_data -  Contains all the non-NA values
+## temp - Contains all the predicted NA values
+# dataset with NA values
+temp <- mydata[!complete.cases(mydata), ] 
+
+# predicting NA values for 'temp' dataset
+prediction_RF_1 <- predict(model_RF, temp)
+
+# assigning the predicted values to the 'Credit_Product' column
+temp$Credit_Product <- prediction_RF_1
+
+# prop.table(table(temp$Credit_Product))
+
+```
+
+## Merged dataset - 'final_ds' 
+
+```{r}
+
+# Final dataset with all the no NA values - 'final_ds'
+final_ds <- rbind(modeling_data, temp)
+# Final dataset predicted NA values (76% acc)
+
+summary(final_ds$Credit_Product)
+prop.table(table(final_ds$Credit_Product))
+```
+
+
+```{r}
+summarise_all(final_ds, ~ sum(is.na(.x)))
+```
+
+```{r}
+summary(final_ds$Target)
+prop.table(table(final_ds$Target))
+```
+
+
+## Updating type of cleaning data
+```{r}
+final_ds$Target <- as.factor(final_ds$Target)
+final_ds$Dependent <- as.factor(final_ds$Dependent)
+final_ds$Registration <- as.factor(final_ds$Registration)
+final_ds$Marital_Status <- as.factor(final_ds$Marital_Status)
+
+```
+
+
+## Checking the imbalance data of Target columns and data partition
+```{r}
+# Set a seed
+set.seed(123)
+
+# Partition the dataset into training and test sets
+# index keeps the record indices for the training data
+index = createDataPartition(final_ds$Target , p = 0.7, list = FALSE)
+
+# Generate training and test data
+training_DT = final_ds[index,]
+test_DT = final_ds[-index,]
+
+```
+
+
+```{r  message=FALSE}
+
+# Check the class distribution in the target column for final_ds, trainingset and testset
+
+table(final_ds$Target)
+table(training_DT$Target)
+table(test_DT$Target)
+
+prop.table(table(final_ds$Target))
+prop.table(table(training_DT$Target))
+prop.table(table(test_DT$Target))
+
+# the table showed there is necessary to balance the dataset (final_ds)
+```
+
+## Applying three techniques to deal with imbalanced dataset  
+
+```{r  message=FALSE}
+
+# Apply oversampling technique
+oversampled <- ovun.sample(Target~. , data = training_DT, method = "over", p=0.4,seed=1)$data
+
+```
+
+Results from the oversampled training set:
+```{r  message=FALSE}
+
+# Check the distribution of Target in the oversampled data
+table(oversampled$Target)
+
+# Check the proportion of Target in the oversampled data
+prop.table(table(oversampled$Target))
+
+```
+
+
+```{r  message=FALSE}
+
+# Apply undersampling technique
+undersampled <- ovun.sample(Target~. , data = training_DT, method = "under", p=0.4,seed=1)$data
+
+```
+
+Results from the undersampled training set:
+```{r  message=FALSE}
+# Check the distribution of Target in the oversampled data
+table(undersampled$Target)
+
+# Check the proportion of Target in the oversampled data
+prop.table(table(undersampled$Target))
+
+```
+
+
+```{r  message=FALSE}
+
+# Apply bothampling technique
+bothsampled <- ovun.sample(Target~. , data = training_DT, method = "both", p=0.4,seed=1)$data
+
+```
+
+Results from the bothsampled training set:
+```{r  message=FALSE}
+# Check the distribution of Target in the oversampled data
+table(bothsampled$Target)
+
+# Check the proportion of Target in the oversampled data
+prop.table(table(bothsampled$Target))
+
+```
+
+# Building the main models
+## Building decision tree models
+
+```{r}
+
+# Build the decision tree and save it as tree_model
+tree_model_origin <- C5.0(Target~., training_DT)
+tree_model_over <- C5.0(Target~., oversampled)
+tree_model_under <- C5.0(Target~., undersampled)
+tree_model_both <- C5.0(Target~., bothsampled)
+```
+
+```{r include=FALSE}
+# Check the decision tree
+summary(tree_model_origin)
+summary(tree_model_over)
+summary(tree_model_under)
+summary(tree_model_both)
+```
+
+
+```{r}
+# Build another decision tree with Credit_Product and Registration just for the purpose of illustration
+tree_illustration_origin <- C5.0(Target~Credit_Product+Registration, training_DT)
+tree_illustration_over <- C5.0(Target~Credit_Product+Registration, oversampled)
+tree_illustration_under <- C5.0(Target~Credit_Product+Registration, undersampled)
+tree_illustration_both <- C5.0(Target~Credit_Product+Registration, bothsampled)
+
+# Plot the decision tree
+plot(tree_illustration_origin)
+plot(tree_illustration_over)
+plot(tree_illustration_under)
+plot(tree_illustration_both)
+```
+
+### Evaluation of decision tree models
+```{r}
+# Predicting the Test set results 
+tree_predict_origin = predict(tree_model_origin, test_DT, type= "class")
+tree_predict_over = predict(tree_model_over, test_DT, type= "class")
+tree_predict_under = predict(tree_model_under, test_DT, type= "class")
+tree_predict_both = predict(tree_model_both, test_DT, type= "class")
+
+# Total number of correct predictions
+correct_tree_origin <- which(tree_predict_origin == test_DT$Target)
+correct_tree_over <- which(tree_predict_over == test_DT$Target)
+correct_tree_under <- which(tree_predict_under == test_DT$Target)
+correct_tree_both <- which(tree_predict_both == test_DT$Target)
+
+# Find the percentage of correct predictions
+accuracy_tree_origin <- length(correct_tree_origin) / nrow(test_DT)
+accuracy_tree_over <- length(correct_tree_over) / nrow(test_DT)
+accuracy_tree_under <- length(correct_tree_under) / nrow(test_DT)
+accuracy_tree_both <- length(correct_tree_both) / nrow(test_DT)
+```
+
+### Finding AUC
+```{r}
+#build decision tree models
+tree.origin <- rpart(Target ~ ., data = training_DT)
+tree.over <- rpart(Target ~ ., data = oversampled)
+tree.under <- rpart(Target ~., data = undersampled)
+tree.both <- rpart(Target ~ ., data = bothsampled)
+```
+
+```{r}
+#make predictions on unseen data
+pred.tree.origin <- predict(tree.origin, newdata = test_DT)
+pred.tree.over <- predict(tree.over, newdata = test_DT)
+pred.tree.under <- predict(tree.under, newdata = test_DT)
+pred.tree.both <- predict(tree.both, newdata = test_DT)
+```
+
+### Finding accuracy 
+```{r}
+accuracy.meas(test_DT$Target, pred.tree.origin[,2])
+accuracy.meas(test_DT$Target, pred.tree.over[,2])
+accuracy.meas(test_DT$Target, pred.tree.under[,2])
+accuracy.meas(test_DT$Target, pred.tree.both[,2])
+```
+
+### Finding ROC
+```{r}
+
+# Use roc function to return some performance metrics
+ROC_DT <- roc(test_DT$Target, pred.tree.origin[,2])
+ROC_DT_over <- roc(test_DT$Target, pred.tree.over[,2])
+ROC_DT_under <- roc(test_DT$Target, pred.tree.under[,2])
+ROC_DT_both <- roc(test_DT$Target, pred.tree.both[,2])
+
+```
+
+```{r}
+# Plot the ROC curve for Decision Tree
+ggroc(list(DT = ROC_DT, DT_over = ROC_DT_over, DT_under = ROC_DT_under, DT_both = ROC_DT_both), legacy.axes=TRUE)+ xlab("FPR") + ylab("TPR") + geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+
+```
+
+```{r}
+#AUC Origin
+roc.curve(test_DT$Target, pred.tree.origin[,2])
+
+
+#AUC Oversampling
+roc.curve(test_DT$Target, pred.tree.over[,2])
+
+
+#AUC Undersampling
+roc.curve(test_DT$Target, pred.tree.under[,2])
+ 
+
+#AUC Both
+roc.curve(test_DT$Target, pred.tree.both[,2])
+
+```
+
+
+## Building random forest models
+```{r}
+
+set.seed(1)
+
+# Build Random Forest model and assign it to model_RF
+model_RFM <- randomForest(Target~., training_DT)
+model_RF_over <- randomForest(Target~., oversampled)
+model_RF_under <- randomForest(Target~., undersampled)
+model_RF_both <- randomForest(Target~., bothsampled) 
+
+                        
+# Print model_RF models
+print(model_RFM)
+print(model_RF_over)
+print(model_RF_under)
+print(model_RF_both)
+
+# Check the important attributes by using importance() function
+importance(model_RFM)
+importance(model_RF_over)
+importance(model_RF_under)
+importance(model_RF_both)
+
+# Plot the importance values
+varImpPlot(model_RFM)
+varImpPlot(model_RF_over)
+varImpPlot(model_RF_under)
+varImpPlot(model_RF_both)
+
+```
+
+### Evaluation of Random Forest Model before tuning models
+```{r }
+
+# Using model_RF predict the class of the test data
+prediction_RFM <- predict(model_RFM, test_DT)
+prediction_RF_over <- predict(model_RF_over, test_DT)
+prediction_RF_under <- predict(model_RF_under, test_DT)
+prediction_RF_both <- predict(model_RF_both, test_DT)
+
+```
+
+```{r}
+prob_RFM <- predict(model_RFM, test_DT, type = "prob")
+prob_RF_over <- predict(model_RF_over, test_DT, type = "prob")
+prob_RF_under <- predict(model_RF_under, test_DT, type = "prob")
+prob_RF_both <- predict(model_RF_both, test_DT, type = "prob")
+```
+
+```{r}
+# Compute the confusion matrix
+confusionMatrix(prediction_RFM, test_DT$Target, positive='1', mode = "prec_recall")
+confusionMatrix(prediction_RF_over, test_DT$Target, positive='1', mode = "prec_recall")
+confusionMatrix(prediction_RF_under, test_DT$Target, positive='1', mode = "prec_recall")
+confusionMatrix(prediction_RF_both, test_DT$Target, positive='1', mode = "prec_recall")
+```
+
+```{r}
+
+# Use roc function to return some performance metrics
+ROC_RFM <- roc(test_DT$Target, prob_RFM[,2])
+ROC_RF_over <- roc(test_DT$Target, prob_RF_over[,2])
+ROC_RF_under <- roc(test_DT$Target, prob_RF_under[,2])
+ROC_RF_both <- roc(test_DT$Target, prob_RF_both[,2])
+
+```
+
+```{r}
+# Plot the ROC curve for Random Forest
+ggroc(list(RF = ROC_RF_over, RF_over = ROC_RF_over, RF_under = ROC_RF_under, RF_both = ROC_RF_both), legacy.axes=TRUE)+ xlab("FPR") + ylab("TPR") +
+   geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+
+```
+
+```{r}
+# Find ROC
+auc(ROC_RFM)
+auc(ROC_RF_over)
+auc(ROC_RF_under)
+auc(ROC_RF_both)
+```
+
+### Tuning random forest models
+```{r }
+set.seed(1)
+
+# Perform joint hyperparameter tuning using tune function
+tuned_rf <- randomForestSRC::tune(Target~., bothsampled,
+  mtryStart = sqrt(ncol(bothsampled)),   
+  nodesizeTry = seq(1, 10, by = 2), 
+  ntree = 500,
+  stepFactor = 1.25, improve = 0.001)
+
+# View the results to see the best hyperparameters
+tuned_rf$optimal
+```
+
+
+```{r}
+set.seed(1)
+
+bestRF <-  randomForest(Target~., bothsampled, mtry = 4, nodesize = 1)
+
+# Print model_RF
+print(bestRF)
+
+# Check the important attributes by using importance() function
+importance(bestRF)
+
+# Plot the importance values
+varImpPlot(bestRF)
+```
+
+### Evaluation of Random Forest models after tuning models
+
+```{r}
+prediction_RF_best <- predict(bestRF, test_DT)
+
+confusionMatrix(prediction_RF_best, test_DT$Target, positive='1', mode = "prec_recall")
+```
+
+```{r}
+prob_RF_best <- predict(bestRF, test_DT, type = "prob")
+```
+
+```{r}
+# Use roc function to return some performance metrics
+ROC_RF_best <- roc(test_DT$Target, prob_RF_best[,2])
+```
+
+```{r}
+# Plot the ROC curve for Random Forest 
+ggroc(list(RF = ROC_RFM, RF_both = ROC_RF_both, RF_best = ROC_RF_best), legacy.axes=TRUE) + xlab("FPR") + ylab("TPR") +
+   geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+
+```
+
+```{r}
+# Calculate the area under the curve (AUC) for Random Forest
+auc(ROC_RF_best)
+```
+
+
+## Building Logistic Regression Models
+
+```{r}
+# Build a logistic regression model assign it to LogReg
+LogReg_origin <- glm(Target~. , training_DT, family = "binomial")
+LogReg_over <- glm(Target~. , oversampled, family = "binomial")
+LogReg_under <- glm(Target~. , undersampled, family = "binomial")
+LogReg_both <- glm(Target~. , bothsampled, family = "binomial")
+
+```
+
+```{r}
+# Predict the class probabilities of the test data
+LogReg_pred_origin <- predict(LogReg_origin, test_DT, type="response")
+LogReg_pred_over <- predict(LogReg_over, test_DT, type="response")
+LogReg_pred_under <- predict(LogReg_under, test_DT, type="response")
+LogReg_pred_both <- predict(LogReg_both, test_DT, type="response")
+```
+
+```{r}
+head(LogReg_pred_origin)
+head(LogReg_pred_over)
+head(LogReg_pred_under)
+head(LogReg_pred_both )
+```
+
+```{r}
+
+# Check the levels of target variable
+levels(training_DT$Target)
+levels(oversampled$Target)
+levels(undersampled$Target)
+levels(bothsampled$Target)
+
+```
+
+### Evaluation of Logistic Regression Models
+```{r}
+# Predict the class 
+LogReg_class <- ifelse(LogReg_pred_origin > 0.5, 1, 0)
+LogReg_class_over <- ifelse(LogReg_pred_over > 0.5, 1, 0)
+LogReg_class_under <- ifelse(LogReg_pred_under > 0.5, 1, 0)
+LogReg_class_both <- ifelse(LogReg_pred_both > 0.5, 1, 0)
+```
+
+```{r}
+# Save the predictions as factor variables
+LogReg_class <- as.factor(LogReg_class)
+LogReg_class_over <- as.factor(LogReg_class_over)
+LogReg_class_under <- as.factor(LogReg_class_under)
+LogReg_class_both <- as.factor(LogReg_class_both)
+```
+
+```{r}
+confusionMatrix(LogReg_class, test_DT$Target, positive = "1", mode = "prec_recall")
+confusionMatrix(LogReg_class_over, test_DT$Target, positive = "1", mode = "prec_recall")
+confusionMatrix(LogReg_class_under,test_DT$Target, positive = "1", mode = "prec_recall")
+confusionMatrix(LogReg_class_both ,test_DT$Target, positive = "1", mode = "prec_recall")
+```
+
+```{r}
+# Logistic Regression
+# Obtain the ROC curve data for logistic regression
+ROC_LogReg <- roc(test_DT$Target, LogReg_pred_origin)
+ROC_LogReg_over <- roc(test_DT$Target, LogReg_pred_over)
+ROC_LogReg_under <- roc(test_DT$Target, LogReg_pred_under)
+ROC_LogReg_both <- roc(test_DT$Target, LogReg_pred_both)
+
+```
+
+```{r}
+#Calculate the area under the curve (AUC) for Logistic Regression 
+auc(ROC_LogReg)
+auc(ROC_LogReg_over)
+auc(ROC_LogReg_under)
+auc(ROC_LogReg_both)
+```
+
+
+```{r}
+# Plot the ROC curve for Logistic Regression
+pROC::ggroc(list(LogReg = ROC_LogReg, LogReg_over = ROC_LogReg_over, LogReg_under = ROC_LogReg_under, LogReg_both = ROC_LogReg_both), legacy.axes=TRUE)+ xlab("FPR") + ylab("TPR") +
+   geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+```
+
+## Building SVM model
+
+```{r}
+#str(final_ds)
+```
+
+```{r}
+#final_ds2 <- final_ds
+#trying to encode data
+# Apply one hot encoding for categorical variable
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Gender")
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Region_Code")
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Occupation")
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Channel_Code")
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Credit_Product")
+#final_ds2 <- one_hot(as.data.table(final_ds2), cols = "Active")
+```
+```{r}
+#Apply label encoding to Account_Type
+#final_ds2$Account_Type <- recode(final_ds2$Account_Type, "Silver" = 1, "Gold" = 2, "Platinum" = 3)
+```
+
+```{r}
+#check str after encoding
+#str(final_ds2)
+```
+
+```{r}
+#build SVM model
+set.seed(123)
+
+model_SVM  <- svm( Target ~. , data =  bothsampled, kernel = "radial", scale = TRUE ,probability = TRUE)
+model_SVM_under  <- svm( Target ~. , data =  undersampled, kernel = "radial", scale = TRUE ,probability = TRUE)
+model_SVM_origin  <- svm( Target ~. , data =  training_DT, kernel = "radial", scale = TRUE ,probability = TRUE)
+
+```
+
+### Evaluation of SVM Models
+```{r}
+# Predict the class of the test data 
+prediction_SVM <- predict(model_SVM, test_DT)
+prediction_SVM_under <- predict(model_SVM_under, test_DT)
+prediction_SVM_origin <- predict(model_SVM_origin, test_DT)
+
+# Use confusionMatrix to print the performance of SVM model
+confusionMatrix(prediction_SVM, test_DT$Target, positive='1', mode = "prec_recall")
+confusionMatrix(prediction_SVM_under, test_DT$Target, positive='1', mode = "prec_recall")
+confusionMatrix(prediction_SVM_origin, test_DT$Target, positive='1', mode = "prec_recall")
+#focus on precision and recall to evaluate models
+```
+
+```{r}
+# Add probability = TRUE for SVM; model_SVM
+SVM_pred <- predict(model_SVM, test_DT, probability = TRUE)
+SVM_pred_under <- predict(model_SVM_under, test_DT, probability = TRUE)
+SVM_pred_origin <- predict(model_SVM_origin, test_DT, probability = TRUE)
+
+# Obtain predicted probabilities for SVM
+prob_SVM <- attr(SVM_pred, "probabilities")
+prob_SVM_under <- attr(SVM_pred_under, "probabilities")
+prob_SVM_origin <- attr(SVM_pred_origin, "probabilities")
+```
+
+```{r}
+# Use roc function to return some performance metrics
+ROC_SVM <- roc(test_DT$Target, prob_SVM[,2])
+ROC_SVM_under <- roc(test_DT$Target, prob_SVM_under[,2])
+ROC_SVM_origin <- roc(test_DT$Target, prob_SVM_origin[,2])
+```
+
+```{r}
+#Calculate the area under the curve (AUC) for SVM
+auc(ROC_SVM)
+auc(ROC_SVM_under)
+auc(ROC_SVM_origin)
+```
+
+
+```{r}
+#tuning model
+# Find the best cost value among the list (0.1, 1, 10, 100, 1000) 
+# tune_out = e1071::tune(svm, Target~., data = bothsampled_SVM, kernel= "radial", scale = TRUE, probability = TRUE, ranges = list(cost=c(0.1, 1, 10, 100, 1000)))
+
+# Save the best model as svm_best
+# svm_best = tune_out$best.model
+# Print svm_model
+# Predict the class of the test data 
+# SVM_tunedpred <- predict(svm_best, test1,probability = TRUE)
+
+# Use confusionMatrix to print the performance of SVM model
+# confusionMatrix(SVM_tunedpred, test1$Target, positive='2', mode = "prec_recall")
+```
+
+
+# Models' Evaluation
+
+```{r ROC Chart}
+#plot ROC curve for Decision Tree, Random Forest, Logistic Regression
+pROC::ggroc(list(ROC_DecisionTree = ROC_DT_both, ROC_RF_best = ROC_RF_best, ROC_Log = ROC_LogReg_both, ROC_SVM = ROC_SVM), legacy.axes=TRUE)+ xlab("FPR") + ylab("TPR") +
+   geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+```
+
+
+```{r}
+#AUC 
+auc(ROC_DT_both)
+auc(ROC_RF_best)
+auc(ROC_LogReg_both)
+auc(ROC_SVM)
+```
+
+
+```{r}
+library(CustomerScoringMetrics)
+
+# Provide probabilities for the outcome of interest and obtain the gain chart data
+GainTable_DT <- cumGainsTable(pred.tree.both[,2], test_DT$Target, resolution = 1/100)
+
+GainTable_LogReg <- cumGainsTable(LogReg_pred_both, test_DT$Target, resolution = 1/100)
+
+GainTable_RF <- cumGainsTable(prob_RF_best[,2], test_DT$Target, resolution = 1/100)
+
+GainTable_SVM <- cumGainsTable(prob_SVM[,2], test_DT$Target, resolution = 1/100)
+```
+
+```{r}
+#plot gain chart for Decision Tree, Random Forest, Logistic Regression
+plot(GainTable_DT[,4], col="red", type="l",    
+xlab="Percentage of test instances", ylab="Percentage of identified leads")
+lines(GainTable_LogReg[,4], col="green", type ="l")
+lines(GainTable_RF[,4], col="blue", type ="l")
+lines(GainTable_SVM[,4], col="purple", type ="l")
+grid(NULL, lwd = 1)
+
+legend("bottomright",
+c("Decision Tree", "LogReg", "Random Forest","SVM"),
+fill=c("red","green", "blue","purple"))
+```
+
